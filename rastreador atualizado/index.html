@@ -1,0 +1,607 @@
+ <!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rastreamento de Motorista de Táxi</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background-color: white;
+            padding: 10px 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .title {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 0;
+            color: #333;
+        }
+
+        .status {
+            font-size: 16px;
+            margin: 5px 0;
+            color: #666;
+        }
+
+        .location {
+            font-size: 14px;
+            margin: 5px 0;
+            color: #333;
+        }
+
+        .map-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+
+        .controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            max-width: 200px;
+        }
+
+        .button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            font-size: 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px 0;
+            display: block;
+            width: 100%;
+        }
+
+        .button:hover {
+            background-color: #45a049;
+        }
+
+        .secondaryButton {
+            background-color: #2196F3;
+        }
+
+        .secondaryButton:hover {
+            background-color: #0b7dda;
+        }
+
+        .tertiaryButton {
+            background-color: #FF9800;
+        }
+
+        .tertiaryButton:hover {
+            background-color: #e68900;
+        }
+
+        .quaternaryButton {
+            background-color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .quaternaryButton:hover {
+            background-color: #45a049;
+        }
+
+        .buttonText {
+            margin-top: 5px;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+
+        .speed-display {
+            font-size: 14px;
+            margin: 5px 0;
+            color: #333;
+            font-weight: bold;
+        }
+
+        .speed-warning {
+            color: #f44336;
+            font-weight: bold;
+        }
+
+        .route-list {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            max-width: 250px;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .route-item {
+            padding: 5px 0;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+        }
+
+        .route-item:hover {
+            background-color: #f9f9f9;
+        }
+
+        .route-item:last-child {
+            border-bottom: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1 class="title">Rastreamento de Motorista de Táxi</h1>
+        <p id="status" class="status">Status: Rastreamento Inativo</p>
+        <p id="location" class="location" style="display: none;"></p>
+    </div>
+    <div class="map-container">
+        <div id="map"></div>
+        <div class="controls">
+            <button id="startRide" class="button quaternaryButton">🚕 Iniciar Corrida</button>
+            <button id="toggleTracking" class="button">Iniciar Rastreamento</button>
+            <button id="getLocation" class="button secondaryButton">Obter Localização Atual</button>
+            <button id="showRoutes" class="button tertiaryButton">Ver Rotas Salvas</button>
+            <p id="speedDisplay" class="speed-display" style="display: none;"></p>
+            <p class="buttonText">Controles do Rastreamento</p>
+        </div>
+        <div id="routeList" class="route-list"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script crossorigin src="https://unpkg.com/react@17/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="text/babel">
+        class RouteDatabase {
+            static async init() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open('TaxiTrackerDB', 1);
+
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => resolve(request.result);
+
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+                        if (!db.objectStoreNames.contains('routes')) {
+                            const store = db.createObjectStore('routes', { keyPath: 'id', autoIncrement: true });
+                            store.createIndex('driverName', 'driverName', { unique: false });
+                            store.createIndex('timestamp', 'timestamp', { unique: false });
+                        }
+                    };
+                });
+            }
+
+            static async saveRoute(driverName, routePoints) {
+                const db = await this.init();
+                const transaction = db.transaction(['routes'], 'readwrite');
+                const store = transaction.objectStore('routes');
+
+                const route = {
+                    driverName: driverName || 'Motorista Anônimo',
+                    routePoints: routePoints,
+                    timestamp: new Date().toISOString(),
+                    startTime: routePoints[0]?.timestamp,
+                    endTime: routePoints[routePoints.length - 1]?.timestamp
+                };
+
+                return new Promise((resolve, reject) => {
+                    const request = store.add(route);
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+
+            static async getAllRoutes() {
+                const db = await this.init();
+                const transaction = db.transaction(['routes'], 'readonly');
+                const store = transaction.objectStore('routes');
+
+                return new Promise((resolve, reject) => {
+                    const request = store.getAll();
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+            }
+
+            static async deleteRoute(id) {
+                const db = await this.init();
+                const transaction = db.transaction(['routes'], 'readwrite');
+                const store = transaction.objectStore('routes');
+
+                return new Promise((resolve, reject) => {
+                    const request = store.delete(id);
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => reject(request.error);
+                });
+            }
+        }
+
+        class LocationServiceWeb {
+            static isTracking = false;
+            static watchId = null;
+            static map = null;
+            static marker = null;
+            static currentRoute = [];
+            static driverName = localStorage.getItem('driverName') || 'Motorista Anônimo';
+            static speedLimit = 60; // km/h - limite padrão
+            static lastPosition = null;
+            static lastSpeed = 0;
+            static speedWarningShown = false;
+
+            static initMap() {
+                this.map = L.map('map').setView([0, 0], 2);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors'
+                }).addTo(this.map);
+            }
+
+            static async startTracking() {
+                if (this.isTracking) {
+                    throw new Error('Rastreamento já está ativo');
+                }
+
+                if (!navigator.geolocation) {
+                    throw new Error('Geolocalização não é suportada por este navegador');
+                }
+
+                this.currentRoute = [];
+                this.lastPosition = null;
+                this.lastSpeed = 0;
+                this.speedWarningShown = false;
+
+                return new Promise((resolve, reject) => {
+                    this.watchId = navigator.geolocation.watchPosition(
+                        (position) => {
+                            console.log('Atualização de localização:', position.coords);
+                            const point = {
+                                lat: position.coords.latitude,
+                                lng: position.coords.longitude,
+                                timestamp: new Date().toISOString(),
+                                accuracy: position.coords.accuracy
+                            };
+                            this.currentRoute.push(point);
+                            this.updateMap(position.coords);
+                            this.checkSpeedLimit(position.coords);
+                        },
+                        (error) => {
+                            console.error('Erro de geolocalização:', error);
+                            reject(new Error('Falha ao obter localização: ' + error.message));
+                        },
+                        {
+                            enableHighAccuracy: true,
+                            timeout: 15000,
+                            maximumAge: 1000
+                        }
+                    );
+                    this.isTracking = true;
+                    resolve();
+                });
+            }
+
+            static async stopTracking() {
+                if (!this.isTracking) {
+                    throw new Error('Rastreamento não está ativo');
+                }
+
+                if (this.watchId) {
+                    navigator.geolocation.clearWatch(this.watchId);
+                    this.watchId = null;
+                }
+
+                // Save route to database
+                if (this.currentRoute.length > 0) {
+                    try {
+                        await RouteDatabase.saveRoute(this.driverName, this.currentRoute);
+                        alert('Rota salva com sucesso!');
+                    } catch (error) {
+                        console.error('Erro ao salvar rota:', error);
+                        alert('Erro ao salvar rota: ' + error.message);
+                    }
+                }
+
+                this.isTracking = false;
+            }
+
+            static async getCurrentLocation() {
+                if (!navigator.geolocation) {
+                    throw new Error('Geolocalização não é suportada por este navegador');
+                }
+
+                return new Promise((resolve, reject) => {
+                    navigator.geolocation.getCurrentPosition(
+                        (position) => {
+                            resolve(position);
+                        },
+                        (error) => {
+                            reject(new Error('Falha ao obter localização atual: ' + error.message));
+                        },
+                        {
+                            enableHighAccuracy: true,
+                            timeout: 15000,
+                            maximumAge: 1000
+                        }
+                    );
+                });
+            }
+
+            static updateMap(coords) {
+                const lat = coords.latitude;
+                const lng = coords.longitude;
+
+                if (this.marker) {
+                    this.marker.setLatLng([lat, lng]);
+                } else {
+                    this.marker = L.marker([lat, lng]).addTo(this.map)
+                        .bindPopup(`<b>${this.driverName}</b><br>Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}<br><button onclick="editDriverName()">Editar Nome</button>`)
+                        .openPopup();
+                }
+
+                this.map.setView([lat, lng], 16);
+                document.getElementById('location').textContent = `Atual: ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+                document.getElementById('location').style.display = 'block';
+            }
+
+            static checkSpeedLimit(coords) {
+                if (!this.lastPosition) {
+                    this.lastPosition = {
+                        lat: coords.latitude,
+                        lng: coords.longitude,
+                        timestamp: new Date().getTime()
+                    };
+                    return;
+                }
+
+                const currentTime = new Date().getTime();
+                const timeDiff = (currentTime - this.lastPosition.timestamp) / 1000; // segundos
+
+                if (timeDiff > 0) {
+                    // Calcular distância usando fórmula de Haversine
+                    const R = 6371; // Raio da Terra em km
+                    const dLat = (coords.latitude - this.lastPosition.lat) * Math.PI / 180;
+                    const dLon = (coords.longitude - this.lastPosition.lng) * Math.PI / 180;
+                    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                        Math.cos(this.lastPosition.lat * Math.PI / 180) * Math.cos(coords.latitude * Math.PI / 180) *
+                        Math.sin(dLon/2) * Math.sin(dLon/2);
+                    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                    const distance = R * c; // km
+
+                    // Calcular velocidade em km/h
+                    const speed = (distance / timeDiff) * 3600;
+                    this.lastSpeed = speed;
+
+                    // Atualizar display de velocidade
+                    const speedDisplay = document.getElementById('speedDisplay');
+                    speedDisplay.textContent = `Velocidade: ${speed.toFixed(1)} km/h`;
+                    speedDisplay.style.display = 'block';
+
+                    // Verificar limite de velocidade
+                    if (speed > this.speedLimit && !this.speedWarningShown) {
+                        this.showSpeedWarning(speed);
+                        this.speedWarningShown = true;
+                    } else if (speed <= this.speedLimit && this.speedWarningShown) {
+                        this.speedWarningShown = false;
+                        speedDisplay.classList.remove('speed-warning');
+                    }
+                }
+
+                // Atualizar última posição
+                this.lastPosition = {
+                    lat: coords.latitude,
+                    lng: coords.longitude,
+                    timestamp: currentTime
+                };
+            }
+
+            static showSpeedWarning(speed) {
+                const speedDisplay = document.getElementById('speedDisplay');
+                speedDisplay.classList.add('speed-warning');
+                speedDisplay.textContent = `⚠️ VELOCIDADE ALTA: ${speed.toFixed(1)} km/h (Limite: ${this.speedLimit} km/h)`;
+
+                // Notificação do navegador (sem ícone para evitar erro 404)
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('Alerta de Velocidade!', {
+                        body: `Velocidade atual: ${speed.toFixed(1)} km/h - Limite excedido!`
+                    });
+                } else if ('Notification' in window && Notification.permission !== 'denied') {
+                    Notification.requestPermission().then(permission => {
+                        if (permission === 'granted') {
+                            new Notification('Alerta de Velocidade!', {
+                                body: `Velocidade atual: ${speed.toFixed(1)} km/h - Limite excedido!`
+                            });
+                        }
+                    });
+                }
+
+                // Alerta sonoro (vibração se disponível)
+                if ('vibrate' in navigator) {
+                    navigator.vibrate([200, 100, 200]);
+                }
+            }
+
+            static async startRide() {
+                try {
+                    // Obter localização atual primeiro
+                    const location = await this.getCurrentLocation();
+                    this.updateMap(location.coords);
+
+                    // Iniciar rastreamento automaticamente
+                    await this.startTracking();
+
+                    // Atualizar interface
+                    document.getElementById('toggleTracking').textContent = 'Parar Rastreamento';
+                    document.getElementById('status').textContent = 'Status: Corrida Ativa';
+                    document.getElementById('speedDisplay').style.display = 'block';
+
+                    // Não mostrar alert de sucesso para não interromper o fluxo automático
+                    console.log('🚕 Corrida iniciada! Rastreamento automático ativado.');
+                } catch (error) {
+                    console.error('Erro ao iniciar corrida:', error);
+                    // Mostrar erro no status ao invés de alert intrusivo
+                    document.getElementById('status').textContent = 'Status: Erro - Verifique permissões';
+                    document.getElementById('status').style.color = '#f44336';
+                }
+            }
+
+            static async showSavedRoutes() {
+                try {
+                    const routes = await RouteDatabase.getAllRoutes();
+                    const routeList = document.getElementById('routeList');
+                    routeList.innerHTML = '<h4>Rotas Salvas</h4>';
+
+                    if (routes.length === 0) {
+                        routeList.innerHTML += '<p>Nenhuma rota salva</p>';
+                    } else {
+                        routes.forEach(route => {
+                            const startTime = new Date(route.startTime).toLocaleString('pt-BR');
+                            const endTime = new Date(route.endTime).toLocaleString('pt-BR');
+                            const item = document.createElement('div');
+                            item.className = 'route-item';
+                            item.innerHTML = `
+                                <strong>${route.driverName}</strong><br>
+                                ${startTime} - ${endTime}<br>
+                                ${route.routePoints.length} pontos
+                            `;
+                            item.onclick = () => this.displayRoute(route);
+                            routeList.appendChild(item);
+                        });
+                    }
+
+                    routeList.style.display = 'block';
+                } catch (error) {
+                    console.error('Erro ao carregar rotas:', error);
+                    alert('Erro ao carregar rotas salvas');
+                }
+            }
+
+            static displayRoute(route) {
+                // Clear existing route lines
+                this.map.eachLayer((layer) => {
+                    if (layer instanceof L.Polyline) {
+                        this.map.removeLayer(layer);
+                    }
+                });
+
+                // Draw route line
+                const latlngs = route.routePoints.map(point => [point.lat, point.lng]);
+                L.polyline(latlngs, { color: 'red', weight: 3, opacity: 0.7 }).addTo(this.map);
+
+                // Fit map to route bounds
+                if (latlngs.length > 1) {
+                    this.map.fitBounds(latlngs);
+                }
+
+                alert(`Rota de ${route.driverName}\nDe: ${new Date(route.startTime).toLocaleString('pt-BR')}\nAté: ${new Date(route.endTime).toLocaleString('pt-BR')}`);
+            }
+        }
+
+        // Global function for popup
+        window.editDriverName = function() {
+            const newName = prompt('Digite o nome do motorista:', LocationServiceWeb.driverName);
+            if (newName && newName.trim()) {
+                LocationServiceWeb.driverName = newName.trim();
+                localStorage.setItem('driverName', LocationServiceWeb.driverName);
+                if (LocationServiceWeb.marker) {
+                    LocationServiceWeb.marker.setPopupContent(`<b>${LocationServiceWeb.driverName}</b><br>Lat: ${LocationServiceWeb.marker.getLatLng().lat.toFixed(6)}<br>Lng: ${LocationServiceWeb.marker.getLatLng().lng.toFixed(6)}<br><button onclick="editDriverName()">Editar Nome</button>`);
+                }
+                alert('Nome do motorista atualizado!');
+            }
+        };
+
+        // Initialize map when page loads
+        LocationServiceWeb.initMap();
+
+        // Automatically start ride when app loads
+        window.addEventListener('load', async () => {
+            try {
+                await LocationServiceWeb.startRide();
+            } catch (error) {
+                console.error('Erro ao iniciar corrida automaticamente:', error);
+                // Fallback: tentar novamente após 2 segundos
+                setTimeout(async () => {
+                    try {
+                        await LocationServiceWeb.startRide();
+                    } catch (retryError) {
+                        console.error('Erro na tentativa de reinício:', retryError);
+                        // Mostrar erro no status ao invés de alert intrusivo
+                        document.getElementById('status').textContent = 'Status: Erro - Verifique permissões de localização';
+                        document.getElementById('status').style.color = '#f44336';
+                    }
+                }, 2000);
+            }
+        });
+
+        // Event listeners
+        document.getElementById('toggleTracking').addEventListener('click', async () => {
+            try {
+                if (LocationServiceWeb.isTracking) {
+                    await LocationServiceWeb.stopTracking();
+                    document.getElementById('toggleTracking').textContent = 'Iniciar Rastreamento';
+                    document.getElementById('status').textContent = 'Status: Rastreamento Inativo';
+                    alert('Rastreamento Parado: Rota foi salva automaticamente.');
+                } else {
+                    await LocationServiceWeb.startTracking();
+                    document.getElementById('toggleTracking').textContent = 'Parar Rastreamento';
+                    document.getElementById('status').textContent = 'Status: Rastreamento Ativo';
+                    alert('Rastreamento Iniciado: Boa viagem!');
+                }
+            } catch (error) {
+                alert('Erro: ' + error.message);
+            }
+        });
+
+        document.getElementById('getLocation').addEventListener('click', async () => {
+            try {
+                const location = await LocationServiceWeb.getCurrentLocation();
+                LocationServiceWeb.updateMap(location.coords);
+                alert(`Localização Atual: Lat: ${location.coords.latitude.toFixed(6)}, Lon: ${location.coords.longitude.toFixed(6)}`);
+            } catch (error) {
+                alert('Erro: Não foi possível obter localização atual: ' + error.message);
+            }
+        });
+
+        document.getElementById('showRoutes').addEventListener('click', () => {
+            LocationServiceWeb.showSavedRoutes();
+        });
+
+        document.getElementById('startRide').addEventListener('click', async () => {
+            await LocationServiceWeb.startRide();
+        });
+
+        // Hide route list when clicking outside
+        document.addEventListener('click', (e) => {
+            const routeList = document.getElementById('routeList');
+            const showRoutesBtn = document.getElementById('showRoutes');
+            if (!routeList.contains(e.target) && e.target !== showRoutesBtn) {
+                routeList.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>
